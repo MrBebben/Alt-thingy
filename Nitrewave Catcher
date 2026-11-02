@@ -1,52 +1,212 @@
-Clear-Host
+#Requires -Version 5.1
 
-Write-Host @"
-  ██████╗ ███████╗██████╗     ██╗      ██████╗ ████████╗██╗   ██╗███████╗         
-  ██╔══██╗██╔════╝██╔══██╗    ██║     ██╔═══██╗╚══██╔══╝██║   ██║██╔════╝         
-  ██████╔╝█████╗  ██║  ██║    ██║     ██║   ██║   ██║   ██║   ██║███████╗         
-  ██╔══██╗██╔══╝  ██║  ██║    ██║     ██║   ██║   ██║   ██║   ██║╚════██║         
-  ██║  ██║███████╗██████╔╝    ███████╗╚██████╔╝   ██║   ╚██████╔╝███████║         
-  ╚═╝  ╚═╝╚══════╝╚═════╝     ╚══════╝ ╚═════╝    ╚═╝    ╚═════╝ ╚══════╝         
-                                                                                  
-"@ -ForegroundColor Red
-Write-Host ""
-Write-Host "  Made by Bxbben - " -ForegroundColor Blue -NoNewline
-Write-Host -ForegroundColor Red "discord.gg/redlotus"
+[CmdletBinding()]
+param(
+    [string]$OutputDirectory = $PSScriptRoot,
 
-Write-Host ""
-function Test-Admin {;$currentUser = New-Object Security.Principal.WindowsPrincipal $([Security.Principal.WindowsIdentity]::GetCurrent());$currentUser.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator);}
-if (!(Test-Admin)) {
-    Write-Warning "Please Run This Script as Admin."
-    Start-Sleep 10
-    Exit
-}
-
-Start-Sleep -s 3
-
-Clear-Host
-
-$host.privatedata.ProgressForegroundColor = "red";
-$host.privatedata.ProgressBackgroundColor = "black";# Author: Bebben
-
-$commands = @(
-    'Get-WmiObject win32_processor | Select-Object ProcessorId',
-    'Get-WmiObject Win32_PhysicalMemory | Select-Object SerialNumber',
-    'Get-WmiObject Win32_DiskDrive | Select-Object SerialNumber'
+    [switch]$OpenReport
 )
 
-$outputFile = Join-Path (Get-Location) 'Serialnumbers.txt'
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
 
-"Outputting hardware info to $outputFile" | Out-File -FilePath $outputFile
-
-foreach ($command in $commands) {
-    # Write the command being run
-    "Running command: $command" | Out-File -FilePath $outputFile -Append
-
-    $result = Invoke-Expression $command
-
-    $result | Out-File -FilePath $outputFile -Append
-    ("=" * 50) | Out-File -FilePath $outputFile -Append  # Separate results for readability
+if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
+    throw 'This script requires Windows.'
 }
 
-Write-Host "Output written to $outputFile"
+if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
+    $OutputDirectory = (Get-Location).Path
+}
 
+function Show-Banner {
+    Write-Host @'
+
+  RED LOTUS
+  ======================================
+       H A R D W A R E   R E P O R T
+  ======================================
+
+'@ -ForegroundColor Red
+
+    Write-Host '  Made by Bxbben' -ForegroundColor Blue
+    Write-Host '  discord.gg/redlotus' -ForegroundColor DarkGray
+    Write-Host ''
+}
+
+function Format-HardwareValue {
+    param(
+        [AllowNull()]
+        [object]$Value
+    )
+
+    if ($null -eq $Value) {
+        return 'Not reported'
+    }
+
+    $text = ([string]$Value).Trim()
+
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return 'Not reported'
+    }
+
+    return $text
+}
+
+Show-Banner
+
+$sections = @(
+    @{
+        Name       = 'PROCESSORS'
+        ClassName  = 'Win32_Processor'
+        Properties = @('Name', 'SocketDesignation', 'ProcessorId',
+                       'NumberOfCores', 'NumberOfLogicalProcessors')
+    }
+    @{
+        Name       = 'MEMORY MODULES'
+        ClassName  = 'Win32_PhysicalMemory'
+        Properties = @(
+            'DeviceLocator'
+            'Manufacturer'
+            'PartNumber'
+            'SerialNumber'
+            @{
+                Name = 'Capacity (GB)'
+                Expression = { [math]::Round($_.Capacity / 1GB, 2) }
+            }
+            'ConfiguredClockSpeed'
+        )
+    }
+    @{
+        Name       = 'DISK DRIVES'
+        ClassName  = 'Win32_DiskDrive'
+        Properties = @(
+            'Model'
+            'SerialNumber'
+            'InterfaceType'
+            @{
+                Name = 'Size (GiB)'
+                Expression = { [math]::Round($_.Size / 1GB, 2) }
+            }
+        )
+    }
+    @{
+        Name       = 'MOTHERBOARD'
+        ClassName  = 'Win32_BaseBoard'
+        Properties = @('Manufacturer', 'Product', 'SerialNumber')
+    }
+    @{
+        Name       = 'BIOS'
+        ClassName  = 'Win32_BIOS'
+        Properties = @('Manufacturer', 'SMBIOSBIOSVersion', 'SerialNumber')
+    }
+)
+
+$startedAt = Get-Date
+$report = [System.Collections.Generic.List[string]]::new()
+$failedSections = 0
+
+$report.Add('RED LOTUS | HARDWARE REPORT')
+$report.Add(('=' * 64))
+$report.Add("Computer   : $env:COMPUTERNAME")
+$report.Add("Generated  : $($startedAt.ToString('yyyy-MM-dd HH:mm:ss zzz'))")
+$report.Add("PowerShell : $($PSVersionTable.PSVersion)")
+$report.Add('')
+$report.Add('Values are reported by Windows and the device firmware.')
+$report.Add('ProcessorId is reported separately from hardware serial numbers.')
+$report.Add('')
+
+try {
+    for ($index = 0; $index -lt $sections.Count; $index++) {
+        $section = $sections[$index]
+
+        Write-Progress `
+            -Activity 'Collecting hardware information' `
+            -Status $section.Name `
+            -PercentComplete (($index / $sections.Count) * 100)
+
+        $report.Add(('=' * 64))
+        $report.Add($section.Name)
+        $report.Add(('=' * 64))
+
+        try {
+            $devices = @(
+                Get-CimInstance `
+                    -ClassName $section.ClassName `
+                    -OperationTimeoutSec 30 `
+                    -ErrorAction Stop |
+                    Select-Object -Property $section.Properties
+            )
+
+            if ($devices.Count -eq 0) {
+                $report.Add('No devices reported.')
+                Write-Host "  [--] $($section.Name): no devices reported" `
+                    -ForegroundColor Yellow
+            }
+            else {
+                for ($deviceIndex = 0; $deviceIndex -lt $devices.Count; $deviceIndex++) {
+                    $report.Add('')
+                    $report.Add("Device $($deviceIndex + 1)")
+
+                    foreach ($property in $devices[$deviceIndex].PSObject.Properties) {
+                        $value = Format-HardwareValue -Value $property.Value
+                        $report.Add(('{0,-24}: {1}' -f $property.Name, $value))
+                    }
+                }
+
+                Write-Host "  [OK] $($section.Name): $($devices.Count) device(s)" `
+                    -ForegroundColor Green
+            }
+        }
+        catch {
+            $failedSections++
+            $report.Add("Query failed: $($_.Exception.Message)")
+            Write-Warning "$($section.Name): $($_.Exception.Message)"
+        }
+
+        $report.Add('')
+    }
+}
+finally {
+    Write-Progress -Activity 'Collecting hardware information' -Completed
+}
+
+try {
+    $directory = New-Item `
+        -ItemType Directory `
+        -Path $OutputDirectory `
+        -Force `
+        -ErrorAction Stop
+
+    # Timestamp and random suffix prevent accidental report overwrites.
+    $timestamp = $startedAt.ToString('yyyyMMdd-HHmmss')
+    $suffix = [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $filename = "RedLotus-Hardware-$timestamp-$suffix.txt"
+    $outputFile = Join-Path -Path $directory.FullName -ChildPath $filename
+
+    $report | Set-Content -LiteralPath $outputFile -Encoding UTF8
+}
+catch {
+    throw "Could not save the hardware report: $($_.Exception.Message)"
+}
+
+Write-Host ''
+
+if ($failedSections -gt 0) {
+    Write-Host "  Report saved with $failedSections failed section(s)." `
+        -ForegroundColor Yellow
+}
+else {
+    Write-Host '  Hardware report complete.' -ForegroundColor Green
+}
+
+Write-Host "  $outputFile" -ForegroundColor Cyan
+Write-Host ''
+
+if ($OpenReport) {
+    try {
+        Invoke-Item -LiteralPath $outputFile
+    }
+    catch {
+        Write-Warning "Report saved, but could not be opened: $($_.Exception.Message)"
+    }
+}
